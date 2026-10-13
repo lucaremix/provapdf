@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Libro</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; }
+    body { display:grid; place-items:center; background:#eeeeec; font-family:Arial,sans-serif; }
+    #book { margin:auto; }
+    .page { background:#fff; overflow:hidden; }
+    .page canvas { display:block; width:100%; height:100%; object-fit:fill; }
+    #message { position:fixed; inset:0; display:grid; place-items:center; padding:24px; text-align:center; color:#555; pointer-events:none; }
+    #message[hidden] { display:none; }
+  </style>
+</head>
+<body>
+  <div id="book"></div>
+  <div id="message">Caricamento libro…</div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+  <script>
+    // Metti il PDF nella stessa cartella e chiamalo libro.pdf.
+    const PDF_URL = './libro.pdf';
+    const message = document.getElementById('message');
+    const book = document.getElementById('book');
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    async function start() {
+      const pdf = await pdfjsLib.getDocument({ url: PDF_URL }).promise;
+      const first = await pdf.getPage(1);
+      const view = first.getViewport({ scale: 1 });
+      const ratio = view.height / view.width;
+      const baseW = 550;
+      const baseH = Math.round(baseW * ratio);
+      const pages = [];
+      const rendered = new Set();
+      const inProgress = new Set();
+
+      // Costruisce soltanto i contenitori: non converte tutte le pagine all'avvio.
+      for (let i = 0; i < pdf.numPages; i++) {
+        const el = document.createElement('div');
+        el.className = 'page';
+        book.appendChild(el);
+        pages.push(el);
+      }
+
+      const flip = new St.PageFlip(book, {
+        width: baseW,
+        height: baseH,
+        size: 'stretch',
+        minWidth: 100,
+        maxWidth: baseW,
+        minHeight: Math.round(100 * ratio),
+        maxHeight: baseH,
+        autoSize: true,
+        showCover: true,
+        usePortrait: true,
+        flippingTime: 650,
+        drawShadow: true,
+        mobileScrollSupport: true
+      });
+      flip.loadFromHTML(pages);
+
+      async function renderPage(index) {
+        if (index < 0 || index >= pages.length || rendered.has(index) || inProgress.has(index)) return;
+        inProgress.add(index);
+        try {
+          const page = await pdf.getPage(index + 1);
+          const natural = page.getViewport({ scale: 1 });
+          // Limita i pixel per mantenere il reader leggero anche con molti fogli.
+          const targetWidth = Math.min(1300, Math.max(750, Math.round(baseW * Math.min(devicePixelRatio || 1, 2))));
+          const viewport = page.getViewport({ scale: targetWidth / natural.width });
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(viewport.width);
+          canvas.height = Math.round(viewport.height);
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          pages[index].replaceChildren(canvas);
+          rendered.add(index);
+          page.cleanup();
+        } catch (e) { console.error('Errore pagina', index + 1, e); }
+        finally { inProgress.delete(index); }
+      }
+
+      function renderNearby(index) {
+        for (let i = Math.max(0, index - 2); i <= Math.min(pages.length - 1, index + 4); i++) {
+          renderPage(i);
+        }
+        // Conserva solo le pagine vicine, evitando consumo di RAM crescente.
+        for (const i of rendered) {
+          if (Math.abs(i - index) > 8) {
+            pages[i].replaceChildren();
+            rendered.delete(i);
+          }
+        }
+      }
+      flip.on('flip', e => renderNearby(e.data));
+      flip.on('changeOrientation', () => renderNearby(flip.getCurrentPageIndex()));
+      renderNearby(0);
+      message.hidden = true;
+      document.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight') flip.flipNext('bottom');
+        if (e.key === 'ArrowLeft') flip.flipPrev('bottom');
+      });
+    }
+    start().catch(error => {
+      console.error(error);
+      message.textContent = 'Impossibile aprire il PDF. Controlla che il file si chiami libro.pdf e che sia caricato sul sito.';
+    });
+  </script>
+</body>
+</html>
