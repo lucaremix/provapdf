@@ -19,12 +19,7 @@
     display: flex; align-items: center; justify-content: center;
     touch-action: none;
   }
-  #book {
-    width: var(--w, 90vw);
-    height: var(--h, 32vw);
-    visibility: hidden;
-  }
-  #book.ready { visibility: visible; }
+  .book { flex: none; }
 
   /* loader */
   #loader {
@@ -58,7 +53,7 @@
 </head>
 <body>
 
-<div id="stage"><div id="book"></div></div>
+<div id="stage"></div>
 
 <div id="loader"><div class="spin"></div><div id="progress"></div></div>
 
@@ -79,36 +74,69 @@
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-  const book = document.getElementById('book');
+  const stage = document.getElementById('stage');
   const loader = document.getElementById('loader');
   const progress = document.getElementById('progress');
 
-  // due A4 orizzontali affiancati: 594 x 210 mm (viene comunque letto dal PDF)
-  let aspect = (2 * 297) / 210;
+  let pageAspect = 297 / 210;   // proporzione di UNA pagina (letta poi dal PDF)
+  let urls = [];
   let pageFlip = null;
+  let currentIndex = 0;
 
-  // il libro occupa il massimo spazio possibile mantenendo le proporzioni
-  function layout() {
-    const vw = window.innerWidth, vh = window.innerHeight, m = 0.94;
-    let w = vw * m, h = w / aspect;
-    if (h > vh * m) { h = vh * m; w = h * aspect; }
-    book.style.setProperty('--w', Math.floor(w) + 'px');
-    book.style.setProperty('--h', Math.floor(h) + 'px');
+  // dimensione di una singola pagina in px, così che la doppia pagina riempia lo schermo
+  function pageSize() {
+    const vw = window.innerWidth * 0.94, vh = window.innerHeight * 0.94;
+    let h = vh, w = h * pageAspect;
+    if (w * 2 > vw) { w = vw / 2; h = w / pageAspect; }
+    return { w: Math.floor(w), h: Math.floor(h) };
   }
-  window.addEventListener('resize', layout);
-  window.addEventListener('orientationchange', () => setTimeout(() => {
-    layout();
-    window.dispatchEvent(new Event('resize'));
-  }, 250));
 
-  const toBlobURL = c => new Promise(res =>
-    c.toBlob(b => res(URL.createObjectURL(b)), 'image/jpeg', 0.9));
+  // crea (o ricrea) il libro con dimensioni fisse: le proporzioni restano esatte
+  function build() {
+    if (!urls.length) return;
+    if (pageFlip) {
+      currentIndex = pageFlip.getCurrentPageIndex();
+      try { pageFlip.destroy(); } catch (e) {}
+      stage.innerHTML = '';
+    }
+    const { w, h } = pageSize();
+    const el = document.createElement('div');
+    el.className = 'book';
+    el.style.width = (w * 2) + 'px';
+    el.style.height = h + 'px';
+    stage.appendChild(el);
+
+    pageFlip = new St.PageFlip(el, {
+      width: w,
+      height: h,
+      size: 'fixed',
+      autoSize: false,
+      usePortrait: false,     // sempre doppia pagina
+      showCover: false,       // la prima pagina del PDF è già una doppia
+      startPage: currentIndex,
+      drawShadow: true,
+      maxShadowOpacity: 0.55,
+      flippingTime: 1000,
+      showPageCorners: true,
+      mobileScrollSupport: false,
+      swipeDistance: 30
+    });
+    pageFlip.loadFromImages(urls);
+  }
+
+  let t;
+  const rebuildSoon = () => { clearTimeout(t); t = setTimeout(build, 200); };
+  window.addEventListener('resize', rebuildSoon);
+  window.addEventListener('orientationchange', rebuildSoon);
 
   window.addEventListener('keydown', e => {
     if (!pageFlip) return;
     if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); pageFlip.flipNext(); }
     if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); pageFlip.flipPrev(); }
   });
+
+  const toBlobURL = c => new Promise(res =>
+    c.toBlob(b => res(URL.createObjectURL(b)), 'image/jpeg', 0.9));
 
   (async () => {
     try {
@@ -117,8 +145,7 @@
 
       const p1 = await pdf.getPage(1);
       const vp1 = p1.getViewport({ scale: 1 });
-      aspect = vp1.width / vp1.height;
-      layout();
+      pageAspect = (vp1.width / 2) / vp1.height;
 
       // risoluzione di rendering adatta allo schermo
       const dpr = window.devicePixelRatio || 1;
@@ -127,8 +154,6 @@
 
       const full = document.createElement('canvas');
       const half = document.createElement('canvas');
-      const urls = [];
-      let halfW = 0, halfH = 0;
 
       for (let i = 1; i <= n; i++) {
         progress.textContent = Math.round(((i - 1) / n) * 100) + '%';
@@ -143,10 +168,8 @@
         page.cleanup();
 
         const hw = Math.floor(full.width / 2), h = full.height;
-        if (i === 1) { halfW = hw; halfH = h; }
         half.width = hw; half.height = h;
         const hctx = half.getContext('2d');
-
         hctx.drawImage(full, 0, 0, hw, h, 0, 0, hw, h);
         urls.push(await toBlobURL(half));
         hctx.drawImage(full, hw, 0, hw, h, 0, 0, hw, h);
@@ -154,26 +177,8 @@
       }
       full.width = full.height = half.width = half.height = 0;
 
-      pageFlip = new St.PageFlip(book, {
-        width: halfW,
-        height: halfH,
-        size: 'stretch',
-        minWidth: 50, maxWidth: 6000,
-        minHeight: 30, maxHeight: 6000,
-        autoSize: true,
-        usePortrait: false,     // sempre doppia pagina
-        showCover: false,       // la prima pagina del PDF è già una doppia
-        drawShadow: true,
-        maxShadowOpacity: 0.55,
-        flippingTime: 1000,
-        showPageCorners: true,
-        mobileScrollSupport: false,
-        swipeDistance: 30
-      });
-      pageFlip.loadFromImages(urls);
-
-      book.classList.add('ready');
       loader.style.display = 'none';
+      build();
     } catch (err) {
       console.error(err);
       loader.innerHTML = 'Impossibile caricare il PDF.';
