@@ -70,6 +70,7 @@
 <script>
 (() => {
   const PDF_URL = 'BLINGRINGSALOTTO.pdf';
+  const BG = '#1a1a1a';   // colore attorno alle pagine più strette (es. copertina)
 
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -78,20 +79,20 @@
   const loader = document.getElementById('loader');
   const progress = document.getElementById('progress');
 
-  let pageAspect = 297 / 210;   // proporzione di UNA pagina (letta poi dal PDF)
+  let boxAspect = (2 * 297) / 210;   // proporzione della pagina "lunga" (letta dal PDF)
   let urls = [];
   let pageFlip = null;
   let currentIndex = 0;
 
-  // dimensione di una singola pagina in px, così che la doppia pagina riempia lo schermo
+  // dimensione della pagina sul sito: la più grande che entra nello schermo
   function pageSize() {
-    const vw = window.innerWidth * 0.94, vh = window.innerHeight * 0.94;
-    let h = vh, w = h * pageAspect;
-    if (w * 2 > vw) { w = vw / 2; h = w / pageAspect; }
+    const vw = window.innerWidth * 0.96, vh = window.innerHeight * 0.94;
+    let w = vw, h = w / boxAspect;
+    if (h > vh) { h = vh; w = h * boxAspect; }
     return { w: Math.floor(w), h: Math.floor(h) };
   }
 
-  // crea (o ricrea) il libro con dimensioni fisse: le proporzioni restano esatte
+  // crea (o ricrea) il libro: 1 pagina del PDF = 1 pagina del sito
   function build() {
     if (!urls.length) return;
     if (pageFlip) {
@@ -102,7 +103,7 @@
     const { w, h } = pageSize();
     const el = document.createElement('div');
     el.className = 'book';
-    el.style.width = (w * 2) + 'px';
+    el.style.width = w + 'px';     // largo quanto UNA pagina → una pagina per schermata
     el.style.height = h + 'px';
     stage.appendChild(el);
 
@@ -111,11 +112,11 @@
       height: h,
       size: 'fixed',
       autoSize: false,
-      usePortrait: false,     // sempre doppia pagina
-      showCover: false,       // la prima pagina del PDF è già una doppia
+      usePortrait: true,          // modalità a pagina singola
+      showCover: false,
       startPage: currentIndex,
       drawShadow: true,
-      maxShadowOpacity: 0.55,
+      maxShadowOpacity: 0.5,
       flippingTime: 1000,
       showPageCorners: true,
       mobileScrollSupport: false,
@@ -143,39 +144,45 @@
       const pdf = await pdfjsLib.getDocument(PDF_URL).promise;
       const n = pdf.numPages;
 
-      const p1 = await pdf.getPage(1);
-      const vp1 = p1.getViewport({ scale: 1 });
-      pageAspect = (vp1.width / 2) / vp1.height;
+      // la pagina "base" è la più larga del PDF (le doppie orizzontali)
+      const sizes = [];
+      for (let i = 1; i <= n; i++) {
+        const vp = (await pdf.getPage(i)).getViewport({ scale: 1 });
+        sizes.push({ w: vp.width, h: vp.height });
+      }
+      boxAspect = Math.max(...sizes.map(s => s.w / s.h));
 
       // risoluzione di rendering adatta allo schermo
       const dpr = window.devicePixelRatio || 1;
-      const target = Math.min(2600, Math.max(screen.width, screen.height) * dpr);
-      const scale = target / vp1.width;
+      const boxW = Math.round(Math.min(2800, Math.max(screen.width, screen.height) * dpr));
+      const boxH = Math.round(boxW / boxAspect);
 
-      const full = document.createElement('canvas');
-      const half = document.createElement('canvas');
+      const tmp = document.createElement('canvas');
+      const box = document.createElement('canvas');
+      box.width = boxW; box.height = boxH;
+      const bctx = box.getContext('2d');
 
       for (let i = 1; i <= n; i++) {
         progress.textContent = Math.round(((i - 1) / n) * 100) + '%';
         const page = await pdf.getPage(i);
+        const base = page.getViewport({ scale: 1 });
+        // la pagina entra intera nel riquadro, centrata (la copertina resta proporzionata)
+        const scale = Math.min(boxW / base.width, boxH / base.height);
         const vp = page.getViewport({ scale });
-        full.width = Math.floor(vp.width);
-        full.height = Math.floor(vp.height);
-        const ctx = full.getContext('2d');
+        tmp.width = Math.floor(vp.width);
+        tmp.height = Math.floor(vp.height);
+        const ctx = tmp.getContext('2d');
         ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, full.width, full.height);
+        ctx.fillRect(0, 0, tmp.width, tmp.height);
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
         page.cleanup();
 
-        const hw = Math.floor(full.width / 2), h = full.height;
-        half.width = hw; half.height = h;
-        const hctx = half.getContext('2d');
-        hctx.drawImage(full, 0, 0, hw, h, 0, 0, hw, h);
-        urls.push(await toBlobURL(half));
-        hctx.drawImage(full, hw, 0, hw, h, 0, 0, hw, h);
-        urls.push(await toBlobURL(half));
+        bctx.fillStyle = BG;
+        bctx.fillRect(0, 0, boxW, boxH);
+        bctx.drawImage(tmp, Math.round((boxW - tmp.width) / 2), Math.round((boxH - tmp.height) / 2));
+        urls.push(await toBlobURL(box));
       }
-      full.width = full.height = half.width = half.height = 0;
+      tmp.width = tmp.height = box.width = box.height = 0;
 
       loader.style.display = 'none';
       build();
