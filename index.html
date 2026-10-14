@@ -18,55 +18,20 @@
     position: fixed; inset: 0;
     display: flex; align-items: center; justify-content: center;
     touch-action: none;
-    cursor: pointer;
   }
   #book {
-    position: relative;
-    width: var(--w, 80vw);
-    height: var(--h, 40vw);
-    perspective: var(--p, 3000px);
-    box-shadow: 0 20px 60px rgba(0,0,0,.55);
-    background: #fff;
+    width: var(--w, 90vw);
+    height: var(--h, 32vw);
     visibility: hidden;
   }
   #book.ready { visibility: visible; }
-  /* piega centrale */
-  #book::after {
-    content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-    background: linear-gradient(to right,
-      rgba(0,0,0,0) 46%, rgba(0,0,0,.10) 49.5%, rgba(0,0,0,.18) 50%,
-      rgba(0,0,0,.10) 50.5%, rgba(0,0,0,0) 54%);
-  }
-  .half {
-    position: absolute; top: 0; width: 50%; height: 100%;
-    display: block; background: #fff;
-  }
-  #left  { left: 0; }
-  #right { left: 50%; }
-  #leaf {
-    position: absolute; top: 0; left: 50%; width: 50%; height: 100%;
-    transform-origin: left center;
-    transform-style: preserve-3d;
-    z-index: 2;
-    display: none;
-  }
-  .face {
-    position: absolute; inset: 0;
-    backface-visibility: hidden; -webkit-backface-visibility: hidden;
-    background: #fff;
-  }
-  .face canvas { width: 100%; height: 100%; display: block; }
-  .back { transform: rotateY(180deg); }
-  .shade {
-    position: absolute; inset: 0; pointer-events: none; opacity: 0;
-  }
-  .front .shade { background: linear-gradient(to left, rgba(0,0,0,.35), rgba(0,0,0,.05)); }
-  .back  .shade { background: linear-gradient(to right, rgba(0,0,0,.35), rgba(0,0,0,.05)); }
 
   /* loader */
   #loader {
-    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: #bbb; font: 15px/1.4 system-ui, sans-serif; text-align: center; padding: 24px;
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center;
+    color: #bbb; font: 14px/1.4 system-ui, sans-serif; text-align: center; padding: 24px;
   }
   .spin {
     width: 34px; height: 34px; border-radius: 50%;
@@ -93,18 +58,9 @@
 </head>
 <body>
 
-<div id="stage">
-  <div id="book">
-    <canvas id="left" class="half"></canvas>
-    <canvas id="right" class="half"></canvas>
-    <div id="leaf">
-      <div class="face front"><canvas id="leafFront"></canvas><div class="shade"></div></div>
-      <div class="face back"><canvas id="leafBack"></canvas><div class="shade"></div></div>
-    </div>
-  </div>
-</div>
+<div id="stage"><div id="book"></div></div>
 
-<div id="loader"><div class="spin"></div></div>
+<div id="loader"><div class="spin"></div><div id="progress"></div></div>
 
 <div id="rotate">
   <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
@@ -115,178 +71,112 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.min.js"></script>
 <script>
 (() => {
   const PDF_URL = 'BLINGRINGSALOTTO.pdf';
-  const DURATION = 900;
-  const EASING = 'cubic-bezier(.45,.05,.35,1)';
 
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-  const $ = id => document.getElementById(id);
-  const book = $('book'), leaf = $('leaf'), loader = $('loader');
-  const cLeft = $('left'), cRight = $('right'), cFront = $('leafFront'), cBack = $('leafBack');
-  const shadeFront = leaf.querySelector('.front .shade');
-  const shadeBack  = leaf.querySelector('.back .shade');
+  const book = document.getElementById('book');
+  const loader = document.getElementById('loader');
+  const progress = document.getElementById('progress');
 
-  let pdf, numPages, aspect = 2 * 210 / 297, renderScale = 1;
-  let cur = 1, busy = false;
-  const cache = new Map();
+  // due A4 orizzontali affiancati: 594 x 210 mm (viene comunque letto dal PDF)
+  let aspect = (2 * 297) / 210;
+  let pageFlip = null;
 
-  // ---------- layout ----------
+  // il libro occupa il massimo spazio possibile mantenendo le proporzioni
   function layout() {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const m = 0.94;
+    const vw = window.innerWidth, vh = window.innerHeight, m = 0.94;
     let w = vw * m, h = w / aspect;
     if (h > vh * m) { h = vh * m; w = h * aspect; }
-    book.style.setProperty('--w', w + 'px');
-    book.style.setProperty('--h', h + 'px');
-    book.style.setProperty('--p', (w * 2) + 'px');
+    book.style.setProperty('--w', Math.floor(w) + 'px');
+    book.style.setProperty('--h', Math.floor(h) + 'px');
   }
   window.addEventListener('resize', layout);
-  window.addEventListener('orientationchange', () => setTimeout(layout, 200));
+  window.addEventListener('orientationchange', () => setTimeout(() => {
+    layout();
+    window.dispatchEvent(new Event('resize'));
+  }, 250));
 
-  // ---------- rendering ----------
-  function makeCanvas(w, h) {
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    return c;
-  }
+  const toBlobURL = c => new Promise(res =>
+    c.toBlob(b => res(URL.createObjectURL(b)), 'image/jpeg', 0.9));
 
-  function getSpread(n) {
-    if (cache.has(n)) return cache.get(n);
-    const p = (async () => {
-      const page = await pdf.getPage(n);
-      const vp = page.getViewport({ scale: renderScale });
-      const full = makeCanvas(Math.floor(vp.width), Math.floor(vp.height));
-      const ctx = full.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, full.width, full.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-
-      const hw = Math.floor(full.width / 2), h = full.height;
-      const L = makeCanvas(hw, h);
-      L.getContext('2d').drawImage(full, 0, 0, hw, h, 0, 0, hw, h);
-      const R = makeCanvas(full.width - hw, h);
-      R.getContext('2d').drawImage(full, hw, 0, full.width - hw, h, 0, 0, full.width - hw, h);
-      full.width = full.height = 0;
-      page.cleanup();
-      return { L, R };
-    })();
-    cache.set(n, p);
-    p.catch(() => cache.delete(n));
-    return p;
-  }
-
-  function paint(target, src) {
-    if (target.width !== src.width || target.height !== src.height) {
-      target.width = src.width; target.height = src.height;
-    }
-    target.getContext('2d').drawImage(src, 0, 0);
-  }
-
-  function evictAndPrefetch() {
-    for (const [k, p] of cache) {
-      if (Math.abs(k - cur) > 3) {
-        cache.delete(k);
-        p.then(s => { s.L.width = s.L.height = s.R.width = s.R.height = 0; }).catch(() => {});
-      }
-    }
-    [cur + 1, cur - 1, cur + 2].forEach(n => { if (n >= 1 && n <= numPages) getSpread(n); });
-  }
-
-  // ---------- flip ----------
-  function flip(reverse) {
-    const opts = { duration: DURATION, easing: EASING, direction: reverse ? 'reverse' : 'normal', fill: 'forwards' };
-    const a = leaf.animate([{ transform: 'rotateY(0deg)' }, { transform: 'rotateY(-180deg)' }], opts);
-    const b = shadeFront.animate([{ opacity: 0 }, { opacity: 1, offset: 0.5 }, { opacity: 1 }], opts);
-    const c = shadeBack.animate([{ opacity: 1 }, { opacity: 1, offset: 0.5 }, { opacity: 0 }], opts);
-    return Promise.all([a.finished, b.finished, c.finished]).then(() => [a, b, c]);
-  }
-
-  function endFlip(anims) {
-    leaf.style.display = 'none';
-    anims.forEach(a => a.cancel());
-  }
-
-  async function next() {
-    if (busy || cur >= numPages) return;
-    busy = true;
-    try {
-      const [a, b] = await Promise.all([getSpread(cur), getSpread(cur + 1)]);
-      paint(cFront, a.R);
-      paint(cBack, b.L);
-      leaf.style.transform = 'rotateY(0deg)';
-      leaf.style.display = 'block';
-      paint(cRight, b.R);
-      const anims = await flip(false);
-      paint(cLeft, b.L);
-      endFlip(anims);
-      cur++;
-      evictAndPrefetch();
-    } finally { busy = false; }
-  }
-
-  async function prev() {
-    if (busy || cur <= 1) return;
-    busy = true;
-    try {
-      const [a, b] = await Promise.all([getSpread(cur - 1), getSpread(cur)]);
-      paint(cFront, a.R);
-      paint(cBack, b.L);
-      leaf.style.transform = 'rotateY(-180deg)';
-      leaf.style.display = 'block';
-      paint(cLeft, a.L);
-      const anims = await flip(true);
-      paint(cRight, a.R);
-      endFlip(anims);
-      cur--;
-      evictAndPrefetch();
-    } finally { busy = false; }
-  }
-
-  // ---------- input: tap a destra/sinistra, swipe, frecce ----------
-  let x0 = null, y0 = null;
-  const stage = $('stage');
-  stage.addEventListener('pointerdown', e => { x0 = e.clientX; y0 = e.clientY; });
-  stage.addEventListener('pointerup', e => {
-    if (x0 === null) return;
-    const dx = e.clientX - x0, dy = e.clientY - y0;
-    x0 = y0 = null;
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
-      dx < 0 ? next() : prev();
-    } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-      e.clientX > window.innerWidth / 2 ? next() : prev();
-    }
-  });
-  stage.addEventListener('pointercancel', () => { x0 = y0 = null; });
   window.addEventListener('keydown', e => {
-    if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); next(); }
-    if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); prev(); }
+    if (!pageFlip) return;
+    if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); pageFlip.flipNext(); }
+    if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); pageFlip.flipPrev(); }
   });
 
-  // ---------- avvio ----------
   (async () => {
     try {
-      pdf = await pdfjsLib.getDocument(PDF_URL).promise;
-      numPages = pdf.numPages;
+      const pdf = await pdfjsLib.getDocument(PDF_URL).promise;
+      const n = pdf.numPages;
+
       const p1 = await pdf.getPage(1);
-      const vp = p1.getViewport({ scale: 1 });
-      aspect = vp.width / vp.height;
-      const dpr = window.devicePixelRatio || 1;
-      const target = Math.min(2400, Math.max(screen.width, screen.height) * dpr);
-      renderScale = target / vp.width;
+      const vp1 = p1.getViewport({ scale: 1 });
+      aspect = vp1.width / vp1.height;
       layout();
-      const s = await getSpread(1);
-      paint(cLeft, s.L);
-      paint(cRight, s.R);
+
+      // risoluzione di rendering adatta allo schermo
+      const dpr = window.devicePixelRatio || 1;
+      const target = Math.min(2600, Math.max(screen.width, screen.height) * dpr);
+      const scale = target / vp1.width;
+
+      const full = document.createElement('canvas');
+      const half = document.createElement('canvas');
+      const urls = [];
+      let halfW = 0, halfH = 0;
+
+      for (let i = 1; i <= n; i++) {
+        progress.textContent = Math.round(((i - 1) / n) * 100) + '%';
+        const page = await pdf.getPage(i);
+        const vp = page.getViewport({ scale });
+        full.width = Math.floor(vp.width);
+        full.height = Math.floor(vp.height);
+        const ctx = full.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, full.width, full.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        page.cleanup();
+
+        const hw = Math.floor(full.width / 2), h = full.height;
+        if (i === 1) { halfW = hw; halfH = h; }
+        half.width = hw; half.height = h;
+        const hctx = half.getContext('2d');
+
+        hctx.drawImage(full, 0, 0, hw, h, 0, 0, hw, h);
+        urls.push(await toBlobURL(half));
+        hctx.drawImage(full, hw, 0, hw, h, 0, 0, hw, h);
+        urls.push(await toBlobURL(half));
+      }
+      full.width = full.height = half.width = half.height = 0;
+
+      pageFlip = new St.PageFlip(book, {
+        width: halfW,
+        height: halfH,
+        size: 'stretch',
+        minWidth: 50, maxWidth: 6000,
+        minHeight: 30, maxHeight: 6000,
+        autoSize: true,
+        usePortrait: false,     // sempre doppia pagina
+        showCover: false,       // la prima pagina del PDF è già una doppia
+        drawShadow: true,
+        maxShadowOpacity: 0.55,
+        flippingTime: 1000,
+        showPageCorners: true,
+        mobileScrollSupport: false,
+        swipeDistance: 30
+      });
+      pageFlip.loadFromImages(urls);
+
       book.classList.add('ready');
       loader.style.display = 'none';
-      evictAndPrefetch();
     } catch (err) {
       console.error(err);
-      loader.textContent = 'Impossibile caricare il PDF.';
+      loader.innerHTML = 'Impossibile caricare il PDF.';
     }
   })();
 })();
