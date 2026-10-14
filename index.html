@@ -79,20 +79,20 @@
   const loader = document.getElementById('loader');
   const progress = document.getElementById('progress');
 
-  let boxAspect = (2 * 297) / 210;   // proporzione della pagina "lunga" (letta dal PDF)
+  let boxAspect = 297 / 210;   // proporzione di UNA metà (A4 orizzontale, letta dal PDF)
   let urls = [];
   let pageFlip = null;
   let currentIndex = 0;
 
-  // dimensione della pagina sul sito: la più grande che entra nello schermo
+  // dimensione di una metà: le due affiancate sono le più grandi che entrano nello schermo
   function pageSize() {
     const vw = window.innerWidth * 0.96, vh = window.innerHeight * 0.94;
-    let w = vw, h = w / boxAspect;
+    let w = vw / 2, h = w / boxAspect;
     if (h > vh) { h = vh; w = h * boxAspect; }
     return { w: Math.floor(w), h: Math.floor(h) };
   }
 
-  // crea (o ricrea) il libro: 1 pagina del PDF = 1 pagina del sito
+  // crea (o ricrea) il libro: ogni pagina del PDF = una doppia pagina (sinistra + destra)
   function build() {
     if (!urls.length) return;
     if (pageFlip) {
@@ -103,7 +103,7 @@
     const { w, h } = pageSize();
     const el = document.createElement('div');
     el.className = 'book';
-    el.style.width = w + 'px';     // largo quanto UNA pagina → una pagina per schermata
+    el.style.width = (w * 2) + 'px';
     el.style.height = h + 'px';
     stage.appendChild(el);
 
@@ -112,8 +112,8 @@
       height: h,
       size: 'fixed',
       autoSize: false,
-      usePortrait: true,          // modalità a pagina singola
-      showCover: false,
+      usePortrait: false,         // sempre doppia pagina
+      showCover: false,           // la prima pagina del PDF è già una doppia
       startPage: currentIndex,
       drawShadow: true,
       maxShadowOpacity: 0.5,
@@ -144,17 +144,17 @@
       const pdf = await pdfjsLib.getDocument(PDF_URL).promise;
       const n = pdf.numPages;
 
-      // la pagina "base" è la più larga del PDF (le doppie orizzontali)
+      // la metà "base" è la più larga del PDF (A4 orizzontale)
       const sizes = [];
       for (let i = 1; i <= n; i++) {
         const vp = (await pdf.getPage(i)).getViewport({ scale: 1 });
         sizes.push({ w: vp.width, h: vp.height });
       }
-      boxAspect = Math.max(...sizes.map(s => s.w / s.h));
+      boxAspect = Math.max(...sizes.map(s => (s.w / 2) / s.h));
 
       // risoluzione di rendering adatta allo schermo
       const dpr = window.devicePixelRatio || 1;
-      const boxW = Math.round(Math.min(2800, Math.max(screen.width, screen.height) * dpr));
+      const boxW = Math.round(Math.min(1500, Math.max(screen.width, screen.height) * dpr / 2));
       const boxH = Math.round(boxW / boxAspect);
 
       const tmp = document.createElement('canvas');
@@ -166,8 +166,9 @@
         progress.textContent = Math.round(((i - 1) / n) * 100) + '%';
         const page = await pdf.getPage(i);
         const base = page.getViewport({ scale: 1 });
-        // la pagina entra intera nel riquadro, centrata (la copertina resta proporzionata)
-        const scale = Math.min(boxW / base.width, boxH / base.height);
+        // ogni metà entra intera nel riquadro; le metà più strette (copertina)
+        // restano attaccate alla piega centrale, con lo sfondo sui lati esterni
+        const scale = Math.min(boxW / (base.width / 2), boxH / base.height);
         const vp = page.getViewport({ scale });
         tmp.width = Math.floor(vp.width);
         tmp.height = Math.floor(vp.height);
@@ -177,9 +178,18 @@
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
         page.cleanup();
 
+        const hw = Math.floor(tmp.width / 2), h = tmp.height;
+        const y = Math.round((boxH - h) / 2);
+
+        // metà sinistra → allineata a destra (verso la piega)
         bctx.fillStyle = BG;
         bctx.fillRect(0, 0, boxW, boxH);
-        bctx.drawImage(tmp, Math.round((boxW - tmp.width) / 2), Math.round((boxH - tmp.height) / 2));
+        bctx.drawImage(tmp, 0, 0, hw, h, boxW - hw, y, hw, h);
+        urls.push(await toBlobURL(box));
+
+        // metà destra → allineata a sinistra (verso la piega)
+        bctx.fillRect(0, 0, boxW, boxH);
+        bctx.drawImage(tmp, hw, 0, tmp.width - hw, h, 0, y, tmp.width - hw, h);
         urls.push(await toBlobURL(box));
       }
       tmp.width = tmp.height = box.width = box.height = 0;
